@@ -3,6 +3,8 @@ import { XMLParser } from "fast-xml-parser";
 import listedCorpCodes from "./corp_codes_listed.json";
 import { getIndustryName } from "./industry_codes";
 import { RATIO_CATEGORIES } from "./ratios";
+import { makeTtlCache } from "./ttlCache";
+import type { RiskEvent } from "./riskEvents";
 
 const BASE_URL = "https://opendart.fss.or.kr/api";
 const REPRT_CODE_ANNUAL = "11011";
@@ -26,6 +28,7 @@ export type Account = {
 export type CompanyResult = {
   corpName: string;
   corpCode: string;
+  stockCode: string;
   usedYear: number;
   fsDiv: "CFS" | "OFS";
   years: { 당기: number; 전기: number; 전전기: number };
@@ -37,6 +40,16 @@ export type CompanyResult = {
   indicators?: Record<string, number | null>;
   // 3개년을 넘겨서 조회했을 때 추가로 딸려오는, usedYear-2보다 더 이전 연도들 (내림차순: 가장 최근 것이 0번).
   extraYears?: { year: number; metrics: Record<string, number | null> }[];
+  riskEvents?: RiskEvent[];
+  valuation?: {
+    stockDate: string;
+    close: number;
+    marketCap: number;
+    per: number | null;
+    pbr: number | null;
+    dividendYield: number | null;
+    evToEbitApprox: number | null;
+  };
 };
 
 export type CompanyOverview = {
@@ -79,25 +92,6 @@ let corpCodeCache: { data: Corp[]; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 6 * 3600 * 1000;
 
 const FETCH_TIMEOUT_MS = 20_000;
-
-// 업종/감사정보/재무비율처럼 이미 확정 공시된 값이라 자주 안 바뀌는 응답을 웜 인스턴스 동안 재사용하기 위한 범용 캐시.
-function makeTtlCache<T>(ttlMs: number) {
-  const store = new Map<string, { data: T; fetchedAt: number }>();
-  return {
-    get(key: string): T | undefined {
-      const entry = store.get(key);
-      if (!entry) return undefined;
-      if (Date.now() - entry.fetchedAt > ttlMs) {
-        store.delete(key);
-        return undefined;
-      }
-      return entry.data;
-    },
-    set(key: string, data: T) {
-      store.set(key, { data, fetchedAt: Date.now() });
-    },
-  };
-}
 
 const EXTRAS_CACHE_TTL_MS = 24 * 3600 * 1000;
 const overviewCache = makeTtlCache<CompanyOverview>(EXTRAS_CACHE_TTL_MS);
@@ -357,6 +351,7 @@ export async function fetchCompany(
   return {
     corpName: corp.corp_name,
     corpCode: corp.corp_code,
+    stockCode: corp.stock_code,
     usedYear,
     fsDiv: fsDivUsed,
     years: { 당기: usedYear, 전기: usedYear - 1, 전전기: usedYear - 2 },
@@ -433,6 +428,47 @@ function parseRatioValue(raw: unknown): number | null {
   if (typeof raw !== "string") return null;
   const n = Number(raw.replace(/,/g, ""));
   return Number.isFinite(n) ? n : null;
+}
+
+export type DividendInfo = {
+  epsConsolidated: number | null;
+  cashDividendYield: number | null;
+};
+
+const dividendCache = makeTtlCache<DividendInfo>(EXTRAS_CACHE_TTL_MS);
+
+// DART가 이미 계산해서 주는 "현금배당수익률(%)"을 그대로 쓴다 (보고서 작성 시점 기준가라 최신 주가와는 다를 수 있음).
+export async function fetchDividendInfo(apiKey: string, corpCode: string, year: number): Promise<DividendInfo> {
+  const cacheKey = `${corpCode}:${year}`;
+  const cached = dividendCache.get(cacheKey);
+  if (cached) return cached;
+
+  const params = new URLSearchParams({
+    crtfc_key: apiKey,
+    corp_code: corpCode,
+    bsns_year: String(year),
+    reprt_code: REPRT_CODE_ANNUAL,
+  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE_URL}/alotMatter.json?${params}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch {
+    return { epsConsolidated: null, cashDividendYield: null };
+  }
+  if (!resp.ok) return { epsConsolidated: null, cashDividendYield: null };
+  const data = await resp.json();
+  if (data.status !== "000" || !Array.isArray(data.list)) return { epsConsolidated: null, cashDividendYield: null };
+
+  const findRow = (se: string) => data.list.find((item: Record<string, string>) => item.se === se);
+  const eps = findRow("(연결)주당순이익(원)") ?? findRow("주당순이익(원)");
+  const yieldRow = findRow("현금배당수익률(%)");
+
+  const result: DividendInfo = {
+    epsConsolidated: parseRatioValue(eps?.thstrm),
+    cashDividendYield: parseRatioValue(yieldRow?.thstrm),
+  };
+  dividendCache.set(cacheKey, result);
+  return result;
 }
 
 export async function fetchFinancialIndicators(

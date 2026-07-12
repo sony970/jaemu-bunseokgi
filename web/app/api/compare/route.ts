@@ -6,10 +6,14 @@ import {
   fetchCompanyOverview,
   fetchAuditInfo,
   fetchFinancialIndicators,
+  fetchDividendInfo,
 } from "@/lib/dart";
+import { fetchRiskEvents } from "@/lib/riskEvents";
+import { fetchLatestStockPrice } from "@/lib/stockPrice";
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.DART_API_KEY;
+  const stockApiKey = process.env.STOCK_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "서버에 DART_API_KEY가 설정되어 있지 않습니다." }, { status: 500 });
   }
@@ -30,13 +34,38 @@ export async function POST(req: NextRequest) {
       validNames.map(async (name) => {
         const company = await fetchCompany(apiKey, name, year, yearsCount);
 
-        const [overview, audit, indicators] = await Promise.all([
+        const [overview, audit, indicators, riskEvents, stockPrice, dividend] = await Promise.all([
           fetchCompanyOverview(apiKey, company.corpCode).catch(() => null),
           fetchAuditInfo(apiKey, company.corpCode, company.usedYear).catch(() => []),
           ratios.length > 0
             ? fetchFinancialIndicators(apiKey, company.corpCode, company.usedYear, ratios).catch(() => ({}))
             : Promise.resolve({}),
+          fetchRiskEvents(apiKey, company.corpCode).catch(() => []),
+          stockApiKey ? fetchLatestStockPrice(stockApiKey, company.stockCode).catch(() => null) : Promise.resolve(null),
+          stockApiKey
+            ? fetchDividendInfo(apiKey, company.corpCode, company.usedYear).catch(() => null)
+            : Promise.resolve(null),
         ]);
+
+        let valuation: (typeof company)["valuation"];
+        if (stockPrice) {
+          const netIncome = company.metrics["당기순이익"]?.당기 ?? null;
+          const equity = company.metrics["자본총계"]?.당기 ?? null;
+          const debt = company.metrics["부채총계"]?.당기 ?? null;
+          const operatingIncome = company.metrics["영업이익"]?.당기 ?? null;
+          valuation = {
+            stockDate: stockPrice.date,
+            close: stockPrice.close,
+            marketCap: stockPrice.marketCap,
+            per: netIncome && netIncome > 0 ? stockPrice.marketCap / netIncome : null,
+            pbr: equity && equity > 0 ? stockPrice.marketCap / equity : null,
+            dividendYield: dividend?.cashDividendYield ?? null,
+            evToEbitApprox:
+              operatingIncome && operatingIncome > 0 && debt !== null
+                ? (stockPrice.marketCap + debt) / operatingIncome
+                : null,
+          };
+        }
 
         return {
           ...company,
@@ -44,6 +73,8 @@ export async function POST(req: NextRequest) {
           industryName: overview?.industryName ?? "",
           audit,
           indicators,
+          riskEvents,
+          valuation,
         };
       })
     );

@@ -68,6 +68,13 @@ export async function POST(req: NextRequest) {
       sheet.addRow(["감사의견", latestAudit.adtOpinion]);
       sheet.addRow(["핵심감사사항", latestAudit.coreAdtMatter]);
     }
+    if (c.riskEvents && c.riskEvents.length > 0) {
+      sheet.addRow(["리스크 신호(최근 2년)"]);
+      sheet.lastRow!.font = { bold: true };
+      for (const ev of c.riskEvents) {
+        sheet.addRow(["", ev.label, ev.date, ev.summary]);
+      }
+    }
     sheet.addRow([]);
 
     sheet.addRow(["구분", "계정명", `당기(${c.years.당기})`, `전기(${c.years.전기})`, `전전기(${c.years.전전기})`]);

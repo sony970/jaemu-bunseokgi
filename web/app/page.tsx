@@ -26,6 +26,17 @@ function opinionBadgeClass(opinion: string) {
   return "bg-amber-50 text-amber-700 ring-amber-600/20";
 }
 
+function severityBadgeClass(severity: string) {
+  if (severity === "danger") return "bg-red-50 text-red-700 ring-red-600/20";
+  if (severity === "positive") return "bg-emerald-50 text-emerald-700 ring-emerald-600/20";
+  return "bg-amber-50 text-amber-700 ring-amber-600/20";
+}
+
+function formatEventDate(d: string) {
+  if (d.length !== 8) return d;
+  return `${d.slice(0, 4)}.${d.slice(4, 6)}.${d.slice(6, 8)}`;
+}
+
 export default function Home() {
   const [names, setNames] = useState(["", "", ""]);
   const [year, setYear] = useState("");
@@ -257,6 +268,29 @@ export default function Home() {
                         )}
                       </div>
                     )}
+
+                    <div className="mt-3 pt-3 border-t border-gray-100">
+                      <p className="text-xs font-medium text-gray-700 mb-1.5">리스크 신호 (최근 2년)</p>
+                      {c.riskEvents && c.riskEvents.length > 0 ? (
+                        <ul className="space-y-1.5">
+                          {c.riskEvents.map((ev, i) => (
+                            <li key={i} className="text-xs">
+                              <span
+                                className={`font-medium px-1.5 py-0.5 rounded-full ring-1 ring-inset mr-1.5 ${severityBadgeClass(
+                                  ev.severity
+                                )}`}
+                              >
+                                {ev.label}
+                              </span>
+                              <span className="text-gray-400">{formatEventDate(ev.date)}</span>
+                              {ev.summary && <span className="text-gray-600"> · {ev.summary}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-gray-400">최근 2년간 특이 공시 없음</p>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -392,6 +426,78 @@ export default function Home() {
                             {formatRatio(c.indicators?.[ratio])}
                           </td>
                         ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {companies.some((c) => c.valuation) && (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 overflow-x-auto">
+                <h3 className="text-sm font-semibold text-gray-700 mb-1">밸류에이션 비교</h3>
+                <p className="text-xs text-gray-400 mb-3">
+                  PER·PBR·EV/EBIT(근사)는 조회 시점 최신 주가 기준, 배당수익률은 DART 사업보고서에 기재된 값(보고서
+                  작성 시점 기준가)이라 시점이 다를 수 있습니다.
+                </p>
+                <table className="border-collapse w-full text-sm">
+                  <thead>
+                    <tr>
+                      <th className="border-b border-gray-200 px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap">
+                        지표
+                      </th>
+                      {companies.map((c) => (
+                        <th
+                          key={c.corpName}
+                          className="border-b border-gray-200 px-3 py-2 text-right text-gray-500 font-medium whitespace-nowrap"
+                        >
+                          {c.corpName}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="hover:bg-gray-50">
+                      <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700 whitespace-nowrap">
+                        주가 (기준일)
+                      </td>
+                      {companies.map((c) => (
+                        <td key={c.corpName} className="border-b border-gray-100 px-3 py-2 text-right whitespace-nowrap">
+                          {c.valuation
+                            ? `${c.valuation.close.toLocaleString("ko-KR")}원 (${formatEventDate(c.valuation.stockDate)})`
+                            : "-"}
+                        </td>
+                      ))}
+                    </tr>
+                    {[
+                      { label: "PER", get: (v: NonNullable<CompanyResult["valuation"]>) => v.per, fmt: (n: number) => `${n.toFixed(2)}배` },
+                      { label: "PBR", get: (v: NonNullable<CompanyResult["valuation"]>) => v.pbr, fmt: (n: number) => `${n.toFixed(2)}배` },
+                      {
+                        label: "배당수익률",
+                        get: (v: NonNullable<CompanyResult["valuation"]>) => v.dividendYield,
+                        fmt: (n: number) => `${n.toFixed(2)}%`,
+                      },
+                      {
+                        label: "EV/EBIT(근사)",
+                        get: (v: NonNullable<CompanyResult["valuation"]>) => v.evToEbitApprox,
+                        fmt: (n: number) => `${n.toFixed(2)}배`,
+                      },
+                    ].map((row) => (
+                      <tr key={row.label} className="hover:bg-gray-50">
+                        <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700 whitespace-nowrap">
+                          {row.label}
+                        </td>
+                        {companies.map((c) => {
+                          const v = c.valuation ? row.get(c.valuation) : null;
+                          return (
+                            <td
+                              key={c.corpName}
+                              className="border-b border-gray-100 px-3 py-2 text-right whitespace-nowrap"
+                            >
+                              {v !== null && v !== undefined ? row.fmt(v) : "-"}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
                   </tbody>
