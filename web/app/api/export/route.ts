@@ -55,6 +55,22 @@ export async function POST(req: NextRequest) {
     summarySheet.addRow(row);
   }
 
+  if (companies.some((c) => c.valuation)) {
+    const valuationRows: [string, (c: CompanyResult) => number | null][] = [
+      ["PER", (c) => c.valuation?.per ?? null],
+      ["PBR", (c) => c.valuation?.pbr ?? null],
+      ["배당수익률(%)", (c) => c.valuation?.dividendYield ?? null],
+      ["EV/EBIT(근사)", (c) => c.valuation?.evToEbitApprox ?? null],
+    ];
+    for (const [label, get] of valuationRows) {
+      const row: (string | number | null)[] = [label];
+      for (const { company, cols } of companyColumns) {
+        cols.forEach((col, i) => row.push(i === cols.length - 1 ? get(company) : ""));
+      }
+      summarySheet.addRow(row);
+    }
+  }
+
   summarySheet.columns.forEach((col) => (col.width = 18));
   summarySheet.getColumn(1).width = 14;
 
