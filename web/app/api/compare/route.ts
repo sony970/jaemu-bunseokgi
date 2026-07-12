@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CompanyNotFoundError, DartApiError, fetchCompany } from "@/lib/dart";
 
-export const runtime = "edge";
-
 export async function POST(req: NextRequest) {
   const apiKey = process.env.DART_API_KEY;
   if (!apiKey) {
