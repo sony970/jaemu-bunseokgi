@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { CompanyNotFoundError, DartApiError, fetchCompany, loadCorpCodes } from "@/lib/dart";
+import { CompanyNotFoundError, DartApiError, fetchCompany } from "@/lib/dart";
 
-export const preferredRegion = "icn1";
-export const maxDuration = 60;
+export const runtime = "edge";
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.DART_API_KEY;
@@ -19,11 +18,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const corpCodes = await loadCorpCodes(apiKey);
     const companies = [];
     for (const name of companyNames) {
       if (!name || !name.trim()) continue;
-      companies.push(await fetchCompany(apiKey, corpCodes, name, year));
+      companies.push(await fetchCompany(apiKey, name, year));
     }
     return NextResponse.json({ companies });
   } catch (e) {

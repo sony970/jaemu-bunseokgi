@@ -1,5 +1,6 @@
-import AdmZip from "adm-zip";
+import { unzipSync } from "fflate";
 import { XMLParser } from "fast-xml-parser";
+import listedCorpCodes from "./corp_codes_listed.json";
 
 const BASE_URL = "https://opendart.fss.or.kr/api";
 const REPRT_CODE_ANNUAL = "11011";
@@ -61,16 +62,16 @@ async function downloadCorpCodes(apiKey: string): Promise<Corp[]> {
   let resp: Response;
   try {
     resp = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  } catch {
-    throw new DartApiError("DART 서버 응답이 지연되어 고유번호 목록을 받아오지 못했습니다.");
+  } catch (e) {
+    throw new DartApiError(`고유번호 목록 요청 실패: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!resp.ok) throw new DartApiError(`고유번호 목록 다운로드 실패: HTTP ${resp.status}`);
-  const buffer = Buffer.from(await resp.arrayBuffer());
+  const bytes = new Uint8Array(await resp.arrayBuffer());
 
   let xml: string;
   try {
-    const zip = new AdmZip(buffer);
-    xml = zip.readAsText("CORPCODE.xml");
+    const unzipped = unzipSync(bytes);
+    xml = new TextDecoder("utf-8").decode(unzipped["CORPCODE.xml"]);
   } catch {
     throw new DartApiError("고유번호 목록을 받아오지 못했습니다 (API 키를 확인하세요).");
   }
@@ -87,7 +88,13 @@ async function downloadCorpCodes(apiKey: string): Promise<Corp[]> {
   }));
 }
 
-export async function loadCorpCodes(apiKey: string): Promise<Corp[]> {
+// 상장사 목록은 배포 시 정적 스냅샷으로 번들되어 있어 즉시 조회 가능 (scripts/build_corp_codes.mjs 로 갱신)
+export function getListedCorpCodes(): Corp[] {
+  return listedCorpCodes as Corp[];
+}
+
+// 비상장사 등 정적 스냅샷에 없는 회사를 위한 전체 목록 라이브 다운로드 (느림, 폴백 전용)
+export async function loadFullCorpCodes(apiKey: string): Promise<Corp[]> {
   if (corpCodeCache && Date.now() - corpCodeCache.fetchedAt < CACHE_TTL_MS) {
     return corpCodeCache.data;
   }
@@ -139,8 +146,8 @@ async function fetchAccounts(
     resp = await fetch(`${BASE_URL}/fnlttSinglAcntAll.json?${params}`, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
-  } catch {
-    throw new DartApiError("DART 서버 응답이 지연되어 재무제표를 받아오지 못했습니다.");
+  } catch (e) {
+    throw new DartApiError(`재무제표 요청 실패: ${e instanceof Error ? e.message : String(e)}`);
   }
   if (!resp.ok) throw new DartApiError(`재무제표 조회 실패: HTTP ${resp.status}`);
   const data = await resp.json();
@@ -206,8 +213,19 @@ export function extractKeyMetrics(accounts: Account[]) {
   return result;
 }
 
-export async function fetchCompany(apiKey: string, corpCodes: Corp[], name: string, year?: number): Promise<CompanyResult> {
-  const corp = findCorp(corpCodes, name);
+async function resolveCorp(apiKey: string, name: string): Promise<Corp> {
+  try {
+    return findCorp(getListedCorpCodes(), name);
+  } catch (e) {
+    if (!(e instanceof CompanyNotFoundError)) throw e;
+    // 상장사 스냅샷에 없으면 (비상장사 등) 전체 목록을 라이브 다운로드해 재시도
+    const fullList = await loadFullCorpCodes(apiKey);
+    return findCorp(fullList, name);
+  }
+}
+
+export async function fetchCompany(apiKey: string, name: string, year?: number): Promise<CompanyResult> {
+  const corp = await resolveCorp(apiKey, name);
 
   let usedYear: number;
   let fsDivUsed: "CFS" | "OFS";

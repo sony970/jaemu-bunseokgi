@@ -2,9 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import type { CompanyResult } from "@/lib/dart";
 
-export const preferredRegion = "icn1";
-export const maxDuration = 60;
-
 const METRIC_ORDER = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"];
 const PERIODS: ("당기" | "전기" | "전전기")[] = ["당기", "전기", "전전기"];
 
