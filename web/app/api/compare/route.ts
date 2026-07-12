@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { CompanyNotFoundError, DartApiError, fetchCompany } from "@/lib/dart";
+import {
+  CompanyNotFoundError,
+  DartApiError,
+  fetchCompany,
+  fetchCompanyOverview,
+  fetchAuditInfo,
+  fetchFinancialIndicators,
+} from "@/lib/dart";
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.DART_API_KEY;
@@ -10,6 +17,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const companyNames: string[] = body.companies ?? [];
   const year: number | undefined = body.year ? Number(body.year) : undefined;
+  const ratios: string[] = Array.isArray(body.ratios) ? body.ratios : [];
 
   if (!Array.isArray(companyNames) || companyNames.length === 0 || companyNames.length > 3) {
     return NextResponse.json({ error: "1~3개의 회사명을 입력하세요." }, { status: 400 });
@@ -19,7 +27,23 @@ export async function POST(req: NextRequest) {
     const companies = [];
     for (const name of companyNames) {
       if (!name || !name.trim()) continue;
-      companies.push(await fetchCompany(apiKey, name, year));
+      const company = await fetchCompany(apiKey, name, year);
+
+      const [overview, audit, indicators] = await Promise.all([
+        fetchCompanyOverview(apiKey, company.corpCode).catch(() => null),
+        fetchAuditInfo(apiKey, company.corpCode, company.usedYear).catch(() => []),
+        ratios.length > 0
+          ? fetchFinancialIndicators(apiKey, company.corpCode, company.usedYear, ratios).catch(() => ({}))
+          : Promise.resolve({}),
+      ]);
+
+      companies.push({
+        ...company,
+        industryCode: overview?.industryCode ?? "",
+        industryName: overview?.industryName ?? "",
+        audit,
+        indicators,
+      });
     }
     return NextResponse.json({ companies });
   } catch (e) {

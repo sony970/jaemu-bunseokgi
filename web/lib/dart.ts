@@ -1,6 +1,8 @@
 import { unzipSync } from "fflate";
 import { XMLParser } from "fast-xml-parser";
 import listedCorpCodes from "./corp_codes_listed.json";
+import { getIndustryName } from "./industry_codes";
+import { RATIO_CATEGORIES } from "./ratios";
 
 const BASE_URL = "https://opendart.fss.or.kr/api";
 const REPRT_CODE_ANNUAL = "11011";
@@ -23,11 +25,30 @@ export type Account = {
 
 export type CompanyResult = {
   corpName: string;
+  corpCode: string;
   usedYear: number;
   fsDiv: "CFS" | "OFS";
   years: { 당기: number; 전기: number; 전전기: number };
   metrics: Record<string, { 당기: number | null; 전기: number | null; 전전기: number | null }>;
   rawAccounts: Account[];
+  industryCode?: string;
+  industryName?: string;
+  audit?: AuditYearInfo[];
+  indicators?: Record<string, number | null>;
+};
+
+export type CompanyOverview = {
+  corpName: string;
+  industryCode: string;
+  industryName: string;
+};
+
+export type AuditYearInfo = {
+  bsnsYear: string;
+  adtor: string;
+  adtOpinion: string;
+  emphsMatter: string;
+  coreAdtMatter: string;
 };
 
 export class DartApiError extends Error {}
@@ -184,6 +205,10 @@ function toInt(amount?: string): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
+function normalizeAccountName(name: string): string {
+  return name.replace(/\s+/g, "");
+}
+
 export function extractKeyMetrics(accounts: Account[]) {
   const isAccounts = accounts.filter((a) => a.sj_div === "IS" || a.sj_div === "CIS");
   const bsAccounts = accounts.filter((a) => a.sj_div === "BS");
@@ -193,12 +218,14 @@ export function extractKeyMetrics(accounts: Account[]) {
     const pool = scope === "BS_ONLY" ? bsAccounts : isAccounts;
     let found: Account | undefined;
     for (const cand of candidates) {
-      found = pool.find((a) => (a.account_nm ?? "").trim() === cand);
+      const normCand = normalizeAccountName(cand);
+      found = pool.find((a) => normalizeAccountName(a.account_nm ?? "") === normCand);
       if (found) break;
     }
     if (!found) {
       for (const cand of candidates) {
-        found = pool.find((a) => (a.account_nm ?? "").includes(cand));
+        const normCand = normalizeAccountName(cand);
+        found = pool.find((a) => normalizeAccountName(a.account_nm ?? "").includes(normCand));
         if (found) break;
       }
     }
@@ -252,10 +279,109 @@ export async function fetchCompany(apiKey: string, name: string, year?: number):
 
   return {
     corpName: corp.corp_name,
+    corpCode: corp.corp_code,
     usedYear,
     fsDiv: fsDivUsed,
     years: { 당기: usedYear, 전기: usedYear - 1, 전전기: usedYear - 2 },
     metrics: extractKeyMetrics(accounts),
     rawAccounts: accounts,
   };
+}
+
+export async function fetchCompanyOverview(apiKey: string, corpCode: string): Promise<CompanyOverview> {
+  const params = new URLSearchParams({ crtfc_key: apiKey, corp_code: corpCode });
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE_URL}/company.json?${params}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (e) {
+    throw new DartApiError(`기업개황 요청 실패: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!resp.ok) throw new DartApiError(`기업개황 조회 실패: HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (data.status !== "000") {
+    return { corpName: "", industryCode: "", industryName: "" };
+  }
+  const industryCode: string = data.induty_code ?? "";
+  return { corpName: data.corp_name ?? "", industryCode, industryName: getIndustryName(industryCode) };
+}
+
+export async function fetchAuditInfo(apiKey: string, corpCode: string, year: number): Promise<AuditYearInfo[]> {
+  const params = new URLSearchParams({
+    crtfc_key: apiKey,
+    corp_code: corpCode,
+    bsns_year: String(year),
+    reprt_code: REPRT_CODE_ANNUAL,
+  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE_URL}/accnutAdtorNmNdAdtOpinion.json?${params}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (e) {
+    throw new DartApiError(`감사정보 요청 실패: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!resp.ok) throw new DartApiError(`감사정보 조회 실패: HTTP ${resp.status}`);
+  const data = await resp.json();
+  if (data.status !== "000" || !Array.isArray(data.list)) return [];
+
+  const seen = new Set<string>();
+  const result: AuditYearInfo[] = [];
+  for (const item of data.list) {
+    const key = `${item.bsns_year}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      bsnsYear: (item.bsns_year ?? "").replace(/\n/g, " "),
+      adtor: item.adtor ?? "",
+      adtOpinion: item.adt_opinion ?? "",
+      emphsMatter: item.emphs_matter ?? "",
+      coreAdtMatter: item.core_adt_matter ?? "",
+    });
+  }
+  return result;
+}
+
+function parseRatioValue(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const n = Number(raw.replace(/,/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function fetchFinancialIndicators(
+  apiKey: string,
+  corpCode: string,
+  year: number,
+  ratioNames: string[]
+): Promise<Record<string, number | null>> {
+  const neededCategories = RATIO_CATEGORIES.filter((cat) => cat.ratios.some((r) => ratioNames.includes(r)));
+  const results = await Promise.all(
+    neededCategories.map(async (cat) => {
+      const params = new URLSearchParams({
+        crtfc_key: apiKey,
+        corp_code: corpCode,
+        bsns_year: String(year),
+        reprt_code: REPRT_CODE_ANNUAL,
+        idx_cl_code: cat.code,
+      });
+      try {
+        const resp = await fetch(`${BASE_URL}/fnlttSinglIndx.json?${params}`, {
+          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+        if (!resp.ok) return [];
+        const data = await resp.json();
+        if (data.status !== "000" || !Array.isArray(data.list)) return [];
+        return data.list as { idx_nm: string; idx_val?: string }[];
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  const flat = results.flat();
+  const out: Record<string, number | null> = {};
+  for (const name of ratioNames) {
+    const item = flat.find((i) => i.idx_nm === name);
+    out[name] = item ? parseRatioValue(item.idx_val) : null;
+  }
+  return out;
 }
