@@ -35,6 +35,8 @@ export type CompanyResult = {
   industryName?: string;
   audit?: AuditYearInfo[];
   indicators?: Record<string, number | null>;
+  // 3개년을 넘겨서 조회했을 때 추가로 딸려오는, usedYear-2보다 더 이전 연도들 (내림차순: 가장 최근 것이 0번).
+  extraYears?: { year: number; metrics: Record<string, number | null> }[];
 };
 
 export type CompanyOverview = {
@@ -209,33 +211,52 @@ function normalizeAccountName(name: string): string {
   return name.replace(/\s+/g, "");
 }
 
-export function extractKeyMetrics(accounts: Account[]) {
+function findMetricAccounts(accounts: Account[]): Record<string, Account | undefined> {
   const isAccounts = accounts.filter((a) => a.sj_div === "IS" || a.sj_div === "CIS");
   const bsAccounts = accounts.filter((a) => a.sj_div === "BS");
 
-  const result: CompanyResult["metrics"] = {};
+  const found: Record<string, Account | undefined> = {};
   for (const [label, scope, candidates] of KEY_METRICS) {
     const pool = scope === "BS_ONLY" ? bsAccounts : isAccounts;
-    let found: Account | undefined;
+    let match: Account | undefined;
     for (const cand of candidates) {
       const normCand = normalizeAccountName(cand);
-      found = pool.find((a) => normalizeAccountName(a.account_nm ?? "") === normCand);
-      if (found) break;
+      match = pool.find((a) => normalizeAccountName(a.account_nm ?? "") === normCand);
+      if (match) break;
     }
-    if (!found) {
+    if (!match) {
       for (const cand of candidates) {
         const normCand = normalizeAccountName(cand);
-        found = pool.find((a) => normalizeAccountName(a.account_nm ?? "").includes(normCand));
-        if (found) break;
+        match = pool.find((a) => normalizeAccountName(a.account_nm ?? "").includes(normCand));
+        if (match) break;
       }
     }
-    result[label] = found
-      ? {
-          당기: toInt(found.thstrm_amount),
-          전기: toInt(found.frmtrm_amount),
-          전전기: toInt(found.bfefrmtrm_amount),
-        }
-      : { 당기: null, 전기: null, 전전기: null };
+    found[label] = match;
+  }
+  return found;
+}
+
+export function extractKeyMetrics(accounts: Account[]) {
+  const found = findMetricAccounts(accounts);
+  const result: CompanyResult["metrics"] = {};
+  for (const [label] of KEY_METRICS) {
+    const acc = found[label];
+    result[label] = {
+      당기: toInt(acc?.thstrm_amount),
+      전기: toInt(acc?.frmtrm_amount),
+      전전기: toInt(acc?.bfefrmtrm_amount),
+    };
+  }
+  return result;
+}
+
+// 5개년 이상 비교 시, 3개년치를 담고 있는 최신 보고서 외에 그 이전 개별 연도 보고서를 추가로 조회할 때 사용.
+// 해당 보고서의 "당기" 컬럼만 그 연도의 값으로 취급한다.
+function extractLatestColumnMetrics(accounts: Account[]): Record<string, number | null> {
+  const found = findMetricAccounts(accounts);
+  const result: Record<string, number | null> = {};
+  for (const [label] of KEY_METRICS) {
+    result[label] = toInt(found[label]?.thstrm_amount);
   }
   return result;
 }
@@ -251,7 +272,12 @@ async function resolveCorp(apiKey: string, name: string): Promise<Corp> {
   }
 }
 
-export async function fetchCompany(apiKey: string, name: string, year?: number): Promise<CompanyResult> {
+export async function fetchCompany(
+  apiKey: string,
+  name: string,
+  year?: number,
+  yearsCount = 3
+): Promise<CompanyResult> {
   const corp = await resolveCorp(apiKey, name);
 
   let usedYear: number;
@@ -277,6 +303,24 @@ export async function fetchCompany(apiKey: string, name: string, year?: number):
     accounts = res.accounts;
   }
 
+  const extraYearCount = Math.max(0, yearsCount - 3);
+  let extraYears: { year: number; metrics: Record<string, number | null> }[] | undefined;
+  if (extraYearCount > 0) {
+    const targetYears = Array.from({ length: extraYearCount }, (_, i) => usedYear - 3 - i);
+    const fetched = await Promise.all(
+      targetYears.map(async (y) => {
+        try {
+          const res = await getFinancialAccounts(apiKey, corp.corp_code, y);
+          if (res.status !== "000" || res.accounts.length === 0) return { year: y, metrics: {} };
+          return { year: y, metrics: extractLatestColumnMetrics(res.accounts) };
+        } catch {
+          return { year: y, metrics: {} };
+        }
+      })
+    );
+    extraYears = fetched;
+  }
+
   return {
     corpName: corp.corp_name,
     corpCode: corp.corp_code,
@@ -285,6 +329,7 @@ export async function fetchCompany(apiKey: string, name: string, year?: number):
     years: { 당기: usedYear, 전기: usedYear - 1, 전전기: usedYear - 2 },
     metrics: extractKeyMetrics(accounts),
     rawAccounts: accounts,
+    extraYears,
   };
 }
 

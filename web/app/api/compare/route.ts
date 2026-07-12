@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
   const companyNames: string[] = body.companies ?? [];
   const year: number | undefined = body.year ? Number(body.year) : undefined;
   const ratios: string[] = Array.isArray(body.ratios) ? body.ratios : [];
+  const yearsCount = Math.min(5, Math.max(3, Number(body.yearsCount) || 3));
 
   if (!Array.isArray(companyNames) || companyNames.length === 0 || companyNames.length > 3) {
     return NextResponse.json({ error: "1~3개의 회사명을 입력하세요." }, { status: 400 });
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
     const companies = [];
     for (const name of companyNames) {
       if (!name || !name.trim()) continue;
-      const company = await fetchCompany(apiKey, name, year);
+      const company = await fetchCompany(apiKey, name, year, yearsCount);
 
       const [overview, audit, indicators] = await Promise.all([
         fetchCompanyOverview(apiKey, company.corpCode).catch(() => null),

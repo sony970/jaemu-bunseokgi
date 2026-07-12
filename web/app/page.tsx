@@ -3,10 +3,10 @@
 import { useState } from "react";
 import type { CompanyResult } from "@/lib/dart";
 import { RATIO_CATEGORIES, DEFAULT_SELECTED_RATIOS } from "@/lib/ratios";
+import { getYearColumns } from "@/lib/yearColumns";
 import CompanySearchInput from "@/app/components/CompanySearchInput";
 
 const METRIC_ORDER = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"];
-const PERIODS: ("당기" | "전기" | "전전기")[] = ["당기", "전기", "전전기"];
 
 function formatAmount(v: number | null) {
   if (v === null || v === undefined) return "-";
@@ -27,6 +27,7 @@ function opinionBadgeClass(opinion: string) {
 export default function Home() {
   const [names, setNames] = useState(["", "", ""]);
   const [year, setYear] = useState("");
+  const [yearsCount, setYearsCount] = useState(3);
   const [selectedRatios, setSelectedRatios] = useState<string[]>(DEFAULT_SELECTED_RATIOS);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +52,7 @@ export default function Home() {
       const resp = await fetch("/api/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companies: filled, year: year || undefined, ratios: selectedRatios }),
+        body: JSON.stringify({ companies: filled, year: year || undefined, ratios: selectedRatios, yearsCount }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -122,6 +123,20 @@ export default function Home() {
               onChange={(e) => setYear(e.target.value)}
               className="border border-gray-300 rounded-lg px-3 py-2 w-28 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
             />
+            <div className="flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+              {[3, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  onClick={() => setYearsCount(n)}
+                  className={`px-3 py-2 transition-colors ${
+                    yearsCount === n ? "bg-indigo-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                  }`}
+                >
+                  {n}개년
+                </button>
+              ))}
+            </div>
             <button
               type="submit"
               disabled={loading}
@@ -212,16 +227,37 @@ export default function Home() {
               <table className="border-collapse w-full text-sm">
                 <thead>
                   <tr>
-                    <th className="border-b border-gray-200 px-3 py-2 text-left text-gray-500 font-medium">지표</th>
-                    {companies.map((c) =>
-                      PERIODS.map((p) => (
+                    <th
+                      rowSpan={2}
+                      className="border-b border-gray-200 px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap align-bottom"
+                    >
+                      지표
+                    </th>
+                    {companies.map((c, ci) => {
+                      const cols = getYearColumns(c);
+                      return (
                         <th
-                          key={c.corpName + p}
-                          className="border-b border-gray-200 px-3 py-2 text-right text-gray-500 font-medium"
+                          key={c.corpName}
+                          colSpan={cols.length}
+                          className={`px-3 py-1.5 text-center text-gray-700 font-semibold whitespace-nowrap bg-gray-50 ${
+                            ci > 0 ? "border-l-2 border-gray-200" : ""
+                          }`}
                         >
                           {c.corpName}
-                          <br />
-                          {c.years[p]}년
+                        </th>
+                      );
+                    })}
+                  </tr>
+                  <tr>
+                    {companies.map((c, ci) =>
+                      getYearColumns(c).map((col, i) => (
+                        <th
+                          key={c.corpName + col.year}
+                          className={`border-b border-gray-200 px-3 py-2 text-right text-gray-500 font-medium whitespace-nowrap ${
+                            ci > 0 && i === 0 ? "border-l-2 border-gray-200" : ""
+                          }`}
+                        >
+                          {col.year}년
                         </th>
                       ))
                     )}
@@ -230,11 +266,18 @@ export default function Home() {
                 <tbody>
                   {METRIC_ORDER.map((metric) => (
                     <tr key={metric} className="hover:bg-gray-50">
-                      <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700">{metric}</td>
-                      {companies.map((c) =>
-                        PERIODS.map((p) => (
-                          <td key={c.corpName + p} className="border-b border-gray-100 px-3 py-2 text-right">
-                            {formatAmount(c.metrics[metric]?.[p] ?? null)}
+                      <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700 whitespace-nowrap">
+                        {metric}
+                      </td>
+                      {companies.map((c, ci) =>
+                        getYearColumns(c).map((col, i) => (
+                          <td
+                            key={c.corpName + col.year}
+                            className={`border-b border-gray-100 px-3 py-2 text-right whitespace-nowrap ${
+                              ci > 0 && i === 0 ? "border-l-2 border-gray-200" : ""
+                            }`}
+                          >
+                            {formatAmount(col.metrics[metric] ?? null)}
                           </td>
                         ))
                       )}
@@ -250,11 +293,13 @@ export default function Home() {
                 <table className="border-collapse w-full text-sm">
                   <thead>
                     <tr>
-                      <th className="border-b border-gray-200 px-3 py-2 text-left text-gray-500 font-medium">지표</th>
+                      <th className="border-b border-gray-200 px-3 py-2 text-left text-gray-500 font-medium whitespace-nowrap">
+                        지표
+                      </th>
                       {companies.map((c) => (
                         <th
                           key={c.corpName}
-                          className="border-b border-gray-200 px-3 py-2 text-right text-gray-500 font-medium"
+                          className="border-b border-gray-200 px-3 py-2 text-right text-gray-500 font-medium whitespace-nowrap"
                         >
                           {c.corpName}
                         </th>
@@ -264,9 +309,11 @@ export default function Home() {
                   <tbody>
                     {selectedRatios.map((ratio) => (
                       <tr key={ratio} className="hover:bg-gray-50">
-                        <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700">{ratio}</td>
+                        <td className="border-b border-gray-100 px-3 py-2 font-medium text-gray-700 whitespace-nowrap">
+                          {ratio}
+                        </td>
                         {companies.map((c) => (
-                          <td key={c.corpName} className="border-b border-gray-100 px-3 py-2 text-right">
+                          <td key={c.corpName} className="border-b border-gray-100 px-3 py-2 text-right whitespace-nowrap">
                             {formatRatio(c.indicators?.[ratio])}
                           </td>
                         ))}

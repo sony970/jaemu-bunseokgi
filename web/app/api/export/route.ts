@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import type { CompanyResult } from "@/lib/dart";
+import { getYearColumns } from "@/lib/yearColumns";
 
 const METRIC_ORDER = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"];
-const PERIODS: ("당기" | "전기" | "전전기")[] = ["당기", "전기", "전전기"];
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -13,14 +13,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "비교 데이터가 없습니다." }, { status: 400 });
   }
 
+  const companyColumns = companies.map((c) => ({ company: c, cols: getYearColumns(c) }));
+
   const workbook = new ExcelJS.Workbook();
 
   const summarySheet = workbook.addWorksheet("비교요약");
   const headerRow1 = ["지표"];
   const headerRow2 = [""];
-  for (const c of companies) {
-    for (const p of PERIODS) headerRow1.push(c.corpName);
-    for (const p of PERIODS) headerRow2.push(`${c.years[p]}년`);
+  for (const { company, cols } of companyColumns) {
+    for (const col of cols) headerRow1.push(company.corpName);
+    for (const col of cols) headerRow2.push(`${col.year}년`);
   }
   summarySheet.addRow(headerRow1);
   summarySheet.addRow(headerRow2);
@@ -28,15 +30,15 @@ export async function POST(req: NextRequest) {
   summarySheet.getRow(2).font = { bold: true };
 
   const industryRow: (string | number | null)[] = ["업종"];
-  for (const c of companies) {
-    for (const p of PERIODS) industryRow.push(p === "당기" ? c.industryName ?? "" : "");
+  for (const { company, cols } of companyColumns) {
+    cols.forEach((col, i) => industryRow.push(i === cols.length - 1 ? company.industryName ?? "" : ""));
   }
   summarySheet.addRow(industryRow);
 
   for (const metric of METRIC_ORDER) {
     const row: (string | number | null)[] = [metric];
-    for (const c of companies) {
-      for (const p of PERIODS) row.push(c.metrics[metric]?.[p] ?? null);
+    for (const { cols } of companyColumns) {
+      for (const col of cols) row.push(col.metrics[metric] ?? null);
     }
     const addedRow = summarySheet.addRow(row);
     addedRow.eachCell((cell, colNumber) => {
@@ -47,8 +49,8 @@ export async function POST(req: NextRequest) {
   const ratioNames = Array.from(new Set(companies.flatMap((c) => Object.keys(c.indicators ?? {}))));
   for (const ratio of ratioNames) {
     const row: (string | number | null)[] = [ratio];
-    for (const c of companies) {
-      for (const p of PERIODS) row.push(p === "당기" ? c.indicators?.[ratio] ?? null : "");
+    for (const { company, cols } of companyColumns) {
+      cols.forEach((col, i) => row.push(i === cols.length - 1 ? company.indicators?.[ratio] ?? null : ""));
     }
     summarySheet.addRow(row);
   }
