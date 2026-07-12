@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { CompanyResult } from "@/lib/dart";
 import { RATIO_CATEGORIES, DEFAULT_SELECTED_RATIOS } from "@/lib/ratios";
 import { getYearColumns } from "@/lib/yearColumns";
 import CompanySearchInput from "@/app/components/CompanySearchInput";
+import TrendChart from "@/app/components/TrendChart";
 
 const METRIC_ORDER = ["매출액", "영업이익", "당기순이익", "자산총계", "부채총계", "자본총계"];
+const CHART_COLORS = ["#4f46e5", "#059669", "#d97706"];
 
 function formatAmount(v: number | null) {
   if (v === null || v === undefined) return "-";
@@ -29,20 +31,20 @@ export default function Home() {
   const [year, setYear] = useState("");
   const [yearsCount, setYearsCount] = useState(3);
   const [selectedRatios, setSelectedRatios] = useState<string[]>(DEFAULT_SELECTED_RATIOS);
+  const [chartMetric, setChartMetric] = useState(METRIC_ORDER[0]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [companies, setCompanies] = useState<CompanyResult[] | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   function toggleRatio(name: string) {
     setSelectedRatios((prev) => (prev.includes(name) ? prev.filter((r) => r !== name) : [...prev, name]));
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function runCompare(filled: string[], yearVal: string, yearsCountVal: number, ratiosVal: string[]) {
     setError(null);
     setCompanies(null);
-    const filled = names.map((n) => n.trim()).filter(Boolean);
     if (filled.length === 0) {
       setError("회사명을 1개 이상 입력하세요.");
       return;
@@ -52,7 +54,12 @@ export default function Home() {
       const resp = await fetch("/api/compare", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companies: filled, year: year || undefined, ratios: selectedRatios, yearsCount }),
+        body: JSON.stringify({
+          companies: filled,
+          year: yearVal || undefined,
+          ratios: ratiosVal,
+          yearsCount: yearsCountVal,
+        }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -60,12 +67,45 @@ export default function Home() {
         return;
       }
       setCompanies(data.companies);
+
+      const params = new URLSearchParams();
+      params.set("companies", filled.join(","));
+      if (yearVal) params.set("year", yearVal);
+      params.set("yearsCount", String(yearsCountVal));
+      if (ratiosVal.length > 0) params.set("ratios", ratiosVal.join(","));
+      window.history.replaceState(null, "", `?${params.toString()}`);
     } catch {
       setError("네트워크 오류가 발생했습니다.");
     } finally {
       setLoading(false);
     }
   }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const filled = names.map((n) => n.trim()).filter(Boolean);
+    await runCompare(filled, year, yearsCount, selectedRatios);
+  }
+
+  // 공유된 URL(예: ?companies=삼성전자,삼성전기&yearsCount=5)로 들어오면 자동으로 같은 비교를 재현한다.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const companiesParam = params.get("companies");
+    if (!companiesParam) return;
+
+    const namesFromUrl = companiesParam.split(",").filter(Boolean).slice(0, 3);
+    const yearFromUrl = params.get("year") ?? "";
+    const yearsCountFromUrl = Math.min(5, Math.max(3, Number(params.get("yearsCount")) || 3));
+    const ratiosFromUrl = (params.get("ratios") ?? "").split(",").filter(Boolean);
+
+    setNames([namesFromUrl[0] ?? "", namesFromUrl[1] ?? "", namesFromUrl[2] ?? ""]);
+    setYear(yearFromUrl);
+    setYearsCount(yearsCountFromUrl);
+    if (ratiosFromUrl.length > 0) setSelectedRatios(ratiosFromUrl);
+
+    runCompare(namesFromUrl, yearFromUrl, yearsCountFromUrl, ratiosFromUrl.length > 0 ? ratiosFromUrl : selectedRatios);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleDownload() {
     if (!companies) return;
@@ -287,6 +327,41 @@ export default function Home() {
               </table>
             </div>
 
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-gray-700">연도별 추세</h3>
+                <select
+                  value={chartMetric}
+                  onChange={(e) => setChartMetric(e.target.value)}
+                  className="border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                >
+                  {METRIC_ORDER.map((metric) => (
+                    <option key={metric} value={metric}>
+                      {metric}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {(() => {
+                const perCompanyCols = companies.map((c) => getYearColumns(c));
+                const allYears = Array.from(new Set(perCompanyCols.flat().map((col) => col.year))).sort(
+                  (a, b) => a - b
+                );
+                return (
+                  <TrendChart
+                    years={allYears}
+                    series={companies.map((c, i) => ({
+                      name: c.corpName,
+                      color: CHART_COLORS[i % CHART_COLORS.length],
+                      values: allYears.map(
+                        (y) => perCompanyCols[i].find((col) => col.year === y)?.metrics[chartMetric] ?? null
+                      ),
+                    }))}
+                  />
+                );
+              })()}
+            </div>
+
             {selectedRatios.length > 0 && (
               <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 overflow-x-auto">
                 <h3 className="text-sm font-semibold text-gray-700 mb-3">재무비율 비교 (당기 기준)</h3>
@@ -324,13 +399,25 @@ export default function Home() {
               </div>
             )}
 
-            <button
-              onClick={handleDownload}
-              disabled={downloading}
-              className="bg-emerald-600 hover:bg-emerald-700 transition-colors text-white rounded-lg px-5 py-2 text-sm font-medium disabled:opacity-50"
-            >
-              {downloading ? "생성 중..." : "엑셀 다운로드"}
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDownload}
+                disabled={downloading}
+                className="bg-emerald-600 hover:bg-emerald-700 transition-colors text-white rounded-lg px-5 py-2 text-sm font-medium disabled:opacity-50"
+              >
+                {downloading ? "생성 중..." : "엑셀 다운로드"}
+              </button>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(window.location.href);
+                  setLinkCopied(true);
+                  setTimeout(() => setLinkCopied(false), 1500);
+                }}
+                className="bg-white border border-gray-300 hover:bg-gray-50 transition-colors text-gray-700 rounded-lg px-5 py-2 text-sm font-medium"
+              >
+                {linkCopied ? "복사됨!" : "링크 복사"}
+              </button>
+            </div>
           </div>
         )}
       </div>

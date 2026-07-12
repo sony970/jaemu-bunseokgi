@@ -80,6 +80,30 @@ const CACHE_TTL_MS = 6 * 3600 * 1000;
 
 const FETCH_TIMEOUT_MS = 20_000;
 
+// 업종/감사정보/재무비율처럼 이미 확정 공시된 값이라 자주 안 바뀌는 응답을 웜 인스턴스 동안 재사용하기 위한 범용 캐시.
+function makeTtlCache<T>(ttlMs: number) {
+  const store = new Map<string, { data: T; fetchedAt: number }>();
+  return {
+    get(key: string): T | undefined {
+      const entry = store.get(key);
+      if (!entry) return undefined;
+      if (Date.now() - entry.fetchedAt > ttlMs) {
+        store.delete(key);
+        return undefined;
+      }
+      return entry.data;
+    },
+    set(key: string, data: T) {
+      store.set(key, { data, fetchedAt: Date.now() });
+    },
+  };
+}
+
+const EXTRAS_CACHE_TTL_MS = 24 * 3600 * 1000;
+const overviewCache = makeTtlCache<CompanyOverview>(EXTRAS_CACHE_TTL_MS);
+const auditCache = makeTtlCache<AuditYearInfo[]>(EXTRAS_CACHE_TTL_MS);
+const ratioCategoryCache = makeTtlCache<{ idx_nm: string; idx_val?: string }[]>(EXTRAS_CACHE_TTL_MS);
+
 async function downloadCorpCodes(apiKey: string): Promise<Corp[]> {
   const url = `${BASE_URL}/corpCode.xml?crtfc_key=${apiKey}`;
   let resp: Response;
@@ -180,14 +204,23 @@ async function fetchAccounts(
   return { status: data.status, message: data.message ?? "", accounts: data.list ?? [] };
 }
 
-async function getFinancialAccounts(apiKey: string, corpCode: string, bsnsYear: number) {
+type FinancialAccountsResult = { status: string; message: string; fsDivUsed: "CFS" | "OFS"; accounts: Account[] };
+const financialAccountsCache = makeTtlCache<FinancialAccountsResult>(EXTRAS_CACHE_TTL_MS);
+
+async function getFinancialAccounts(apiKey: string, corpCode: string, bsnsYear: number): Promise<FinancialAccountsResult> {
+  const cacheKey = `${corpCode}:${bsnsYear}`;
+  const cached = financialAccountsCache.get(cacheKey);
+  if (cached) return cached;
+
   let { status, message, accounts } = await fetchAccounts(apiKey, corpCode, bsnsYear, "CFS");
   let fsDivUsed: "CFS" | "OFS" = "CFS";
   if (status !== "000" || accounts.length === 0) {
     ({ status, message, accounts } = await fetchAccounts(apiKey, corpCode, bsnsYear, "OFS"));
     fsDivUsed = "OFS";
   }
-  return { status, message, fsDivUsed, accounts };
+  const result = { status, message, fsDivUsed, accounts };
+  if (status === "000" && accounts.length > 0) financialAccountsCache.set(cacheKey, result);
+  return result;
 }
 
 async function findLatestAvailableYear(apiKey: string, corpCode: string, startYear: number) {
@@ -334,6 +367,9 @@ export async function fetchCompany(
 }
 
 export async function fetchCompanyOverview(apiKey: string, corpCode: string): Promise<CompanyOverview> {
+  const cached = overviewCache.get(corpCode);
+  if (cached) return cached;
+
   const params = new URLSearchParams({ crtfc_key: apiKey, corp_code: corpCode });
   let resp: Response;
   try {
@@ -347,10 +383,16 @@ export async function fetchCompanyOverview(apiKey: string, corpCode: string): Pr
     return { corpName: "", industryCode: "", industryName: "" };
   }
   const industryCode: string = data.induty_code ?? "";
-  return { corpName: data.corp_name ?? "", industryCode, industryName: getIndustryName(industryCode) };
+  const result = { corpName: data.corp_name ?? "", industryCode, industryName: getIndustryName(industryCode) };
+  overviewCache.set(corpCode, result);
+  return result;
 }
 
 export async function fetchAuditInfo(apiKey: string, corpCode: string, year: number): Promise<AuditYearInfo[]> {
+  const cacheKey = `${corpCode}:${year}`;
+  const cached = auditCache.get(cacheKey);
+  if (cached) return cached;
+
   const params = new URLSearchParams({
     crtfc_key: apiKey,
     corp_code: corpCode,
@@ -383,6 +425,7 @@ export async function fetchAuditInfo(apiKey: string, corpCode: string, year: num
       coreAdtMatter: item.core_adt_matter ?? "",
     });
   }
+  auditCache.set(cacheKey, result);
   return result;
 }
 
@@ -401,6 +444,10 @@ export async function fetchFinancialIndicators(
   const neededCategories = RATIO_CATEGORIES.filter((cat) => cat.ratios.some((r) => ratioNames.includes(r)));
   const results = await Promise.all(
     neededCategories.map(async (cat) => {
+      const cacheKey = `${corpCode}:${year}:${cat.code}`;
+      const cached = ratioCategoryCache.get(cacheKey);
+      if (cached) return cached;
+
       const params = new URLSearchParams({
         crtfc_key: apiKey,
         corp_code: corpCode,
@@ -415,7 +462,9 @@ export async function fetchFinancialIndicators(
         if (!resp.ok) return [];
         const data = await resp.json();
         if (data.status !== "000" || !Array.isArray(data.list)) return [];
-        return data.list as { idx_nm: string; idx_val?: string }[];
+        const list = data.list as { idx_nm: string; idx_val?: string }[];
+        ratioCategoryCache.set(cacheKey, list);
+        return list;
       } catch {
         return [];
       }

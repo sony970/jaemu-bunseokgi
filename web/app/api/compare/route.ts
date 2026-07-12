@@ -25,27 +25,28 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const companies = [];
-    for (const name of companyNames) {
-      if (!name || !name.trim()) continue;
-      const company = await fetchCompany(apiKey, name, year, yearsCount);
+    const validNames = companyNames.filter((name) => name && name.trim());
+    const companies = await Promise.all(
+      validNames.map(async (name) => {
+        const company = await fetchCompany(apiKey, name, year, yearsCount);
 
-      const [overview, audit, indicators] = await Promise.all([
-        fetchCompanyOverview(apiKey, company.corpCode).catch(() => null),
-        fetchAuditInfo(apiKey, company.corpCode, company.usedYear).catch(() => []),
-        ratios.length > 0
-          ? fetchFinancialIndicators(apiKey, company.corpCode, company.usedYear, ratios).catch(() => ({}))
-          : Promise.resolve({}),
-      ]);
+        const [overview, audit, indicators] = await Promise.all([
+          fetchCompanyOverview(apiKey, company.corpCode).catch(() => null),
+          fetchAuditInfo(apiKey, company.corpCode, company.usedYear).catch(() => []),
+          ratios.length > 0
+            ? fetchFinancialIndicators(apiKey, company.corpCode, company.usedYear, ratios).catch(() => ({}))
+            : Promise.resolve({}),
+        ]);
 
-      companies.push({
-        ...company,
-        industryCode: overview?.industryCode ?? "",
-        industryName: overview?.industryName ?? "",
-        audit,
-        indicators,
-      });
-    }
+        return {
+          ...company,
+          industryCode: overview?.industryCode ?? "",
+          industryName: overview?.industryName ?? "",
+          audit,
+          indicators,
+        };
+      })
+    );
     return NextResponse.json({ companies });
   } catch (e) {
     if (e instanceof CompanyNotFoundError) {
